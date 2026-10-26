@@ -21,9 +21,6 @@ const Args = struct {
 };
 ```
 
-> [!WARNING]
-> Early development. The API will change.
-
 ## Installation
 
 Requires Zig 0.16.0 or later.
