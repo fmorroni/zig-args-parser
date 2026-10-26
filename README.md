@@ -1,4 +1,4 @@
-# zig-arg-parser
+# zig-args-parser
 
 A command line argument parser for Zig, driven by a plain struct.
 
@@ -29,21 +29,21 @@ const Args = struct {
 Requires Zig 0.16.0 or later.
 
 ```sh
-zig fetch --save git+https://github.com/fmorroni/zig-arg-parser
+zig fetch --save git+https://github.com/fmorroni/zig-args-parser
 ```
 
 Then in your `build.zig`:
 
 ```zig
-const arg_parser = b.dependency("zig_arg_parser", .{ .target = target, .optimize = optimize });
-exe.root_module.addImport("zig_arg_parser", arg_parser.module("zig_arg_parser"));
+const args_parser = b.dependency("zig_args_parser", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("zig_args_parser", args_parser.module("zig_args_parser"));
 ```
 
 ## Usage
 
 ```zig
 const std = @import("std");
-const argp = @import("zig_arg_parser");
+const argp = @import("zig_args_parser");
 
 const Args = struct {
     verbose: bool,

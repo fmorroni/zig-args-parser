@@ -1,11 +1,11 @@
 const std = @import("std");
 
-const arg_parser = @import("arg_parser.zig");
-pub const ArgsParser = arg_parser.ArgsParser;
-pub const ArgsInfo = arg_parser.ArgsInfo;
-pub const Arg = arg_parser.Arg;
-pub const Diagnostics = arg_parser.Diagnostics;
+const args_parser = @import("args_parser.zig");
+pub const ArgsParser = args_parser.ArgsParser;
+pub const ArgsInfo = args_parser.ArgsInfo;
+pub const Arg = args_parser.Arg;
+pub const Diagnostics = args_parser.Diagnostics;
 
 test {
-    std.testing.refAllDecls(arg_parser);
+    std.testing.refAllDecls(args_parser);
 }

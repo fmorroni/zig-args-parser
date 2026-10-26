@@ -1,7 +1,7 @@
 .{
-    .name = .zig_arg_parser,
+    .name = .zig_args_parser,
     .version = "0.0.0",
-    .fingerprint = 0xa6babafba15a61db,
+    .fingerprint = 0x9bb25082104554b0,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{
