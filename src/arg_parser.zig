@@ -74,7 +74,7 @@ pub const Diagnostics = struct {
 /// `-h`/`--help` is built in: `parse` returns `error.HelpRequested`, and `printHelp` prints the help.
 pub fn ArgsParser(comptime ExpectedArgs: type) type {
     return struct {
-        const Errors = error{ HelpRequested, MissingFlag, MissingPositional, MissingValue, TooManyArguments, InvalidFlag };
+        pub const Errors = error{ HelpRequested, MissingFlag, MissingPositional, MissingValue, TooManyArguments, InvalidFlag };
 
         const args_info: ArgsInfo(ExpectedArgs) = if (@hasDecl(ExpectedArgs, "args")) ExpectedArgs.args else .{};
 
