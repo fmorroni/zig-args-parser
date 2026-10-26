@@ -74,7 +74,7 @@ pub const Diagnostics = struct {
 /// `-h`/`--help` is built in: `parse` returns `error.HelpRequested`, and `printHelp` prints the help.
 pub fn ArgsParser(comptime ExpectedArgs: type) type {
     return struct {
-        pub const Errors = error{ HelpRequested, MissingFlag, MissingPositional, MissingValue, TooManyArguments, InvalidFlag };
+        pub const Errors = error{ HelpRequested, MissingFlag, MissingPositional, MissingValue, TooManyArguments, InvalidFlag, InvalidValue };
 
         const args_info: ArgsInfo(ExpectedArgs) = if (@hasDecl(ExpectedArgs, "args")) ExpectedArgs.args else .{};
 
@@ -255,6 +255,13 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
             return switch (@typeInfo(T)) {
                 .optional => |o| valueName(o.child),
                 .pointer => "string",
+                .@"enum" => |e| blk: {
+                    var text: []const u8 = "";
+                    for (e.fields, 0..) |field, i| {
+                        text = text ++ (if (i == 0) "" else "|") ++ snakeToKebab(field.name);
+                    }
+                    break :blk text;
+                },
                 else => @typeName(T),
             };
         }
@@ -279,15 +286,27 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                 .optional => |o| try parseValue(o.child, s),
                 .bool => unreachable,
                 .pointer => if (T == []const u8) s else @compileError("unsupported arg type " ++ @typeName(T)),
+                .@"enum" => parseEnum(T, s),
                 else => @compileError("unsupported arg type " ++ @typeName(T)),
             };
         }
 
+        /// Matches the kebab-case tag names, like flag names.
+        fn parseEnum(comptime T: type, s: []const u8) Errors!T {
+            inline for (@typeInfo(T).@"enum".fields) |field| {
+                if (std.mem.eql(u8, snakeToKebab(field.name), s)) return @field(T, field.name);
+            }
+            return Errors.InvalidValue;
+        }
+
         fn snakeToKebab(comptime field_name: []const u8) []const u8 {
-            var buf: [field_name.len]u8 = field_name[0..field_name.len].*;
-            std.mem.replaceScalar(u8, &buf, '_', '-');
-            const final = buf;
-            return &final;
+            // Need comptime so the result is stored as binary rodata.
+            return comptime blk: {
+                var buf: [field_name.len]u8 = field_name[0..field_name.len].*;
+                std.mem.replaceScalar(u8, &buf, '_', '-');
+                const final = buf;
+                break :blk &final;
+            };
         }
 
         fn validateShortNames(comptime flag_specs: []const ArgSpec) void {
@@ -331,6 +350,7 @@ const TestArgs = struct {
     count: u8,
     max_retries: ?u8,
     some_float: ?f32,
+    some_enum: ?enum { option_a, option_b },
 
     positional_1: u32,
     positional_2: []const u8,
@@ -341,6 +361,7 @@ const TestArgs = struct {
         .count = 3,
         .max_retries = 5,
         .some_float = 3.3,
+        .some_enum = .option_a,
         .positional_1 = 42,
         .positional_2 = "test string",
         .positional_3 = 5.5,
@@ -351,6 +372,7 @@ const TestArgs = struct {
         .count = 3,
         .max_retries = null,
         .some_float = null,
+        .some_enum = null,
         .positional_1 = 42,
         .positional_2 = "test string",
         .positional_3 = null,
@@ -360,6 +382,7 @@ const TestArgs = struct {
         .count = .{ .flag = .{ .short_name = 'c', .help = "Number of whatevers" } },
         .max_retries = .{ .flag = .{ .short_name = 'r' } },
         .some_float = .{ .flag = .{ .short_name = 'f' } },
+        .some_enum = .{ .flag = .{ .short_name = 'e' } },
         .positional_1 = .{ .positional = .{ .help = "This does something" } },
         .positional_2 = .{ .positional = .{ .help = "This does other thing" } },
         .positional_3 = .{ .positional = .{ .help = "This does other other thing" } },
@@ -396,6 +419,8 @@ test "long and short names are equivalent" {
         "5",
         "--some-float",
         "3.3",
+        "--some-enum",
+        "option-a",
     }));
     try std.testing.expectEqual(TestArgs.all_present, try testParse(&.{
         "42",
@@ -408,6 +433,8 @@ test "long and short names are equivalent" {
         "5",
         "-f",
         "3.3",
+        "-e",
+        "option-a",
     }));
 }
 
@@ -421,6 +448,8 @@ test "flags can come in any order" {
         "-f",
         "3.3",
         "--verbose",
+        "-e",
+        "option-a",
         "-c",
         "3",
     }));
@@ -450,6 +479,12 @@ test "omitted optional/boolean flags and arguments are null" {
         "-c",
         "3",
     }));
+}
+
+test "enum flag/argument rejects values not in enum set" {
+    try std.testing.expectError(error.InvalidValue, testParse(&.{ "42", "test string", "-c", "3", "-e", "not-an-enum-value" }));
+    // Like flag names, values are kebab-case only.
+    try std.testing.expectError(error.InvalidValue, testParse(&.{ "42", "test string", "-c", "3", "-e", "option_a" }));
 }
 
 test "long names use kebab-case only" {
@@ -491,10 +526,11 @@ test "help" {
         \\
         \\Options:
         \\      --verbose
-        \\  -c, --count <u8>        Number of whatevers (required)
+        \\  -c, --count <u8>                     Number of whatevers (required)
         \\  -r, --max-retries <u8>
         \\  -f, --some-float <f32>
-        \\  -h, --help              Print this help and exit
+        \\  -e, --some-enum <option-a|option-b>
+        \\  -h, --help                           Print this help and exit
         \\
     , w.buffered());
 }
