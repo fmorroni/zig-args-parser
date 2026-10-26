@@ -155,6 +155,7 @@ A lone `-` is also a positional, since it conventionally means stdin.
 
 ### Supported value types
 
+- `bool` (only for flags)
 - Integers (`u8`, `i64`, ...), parsed in base 10
 - Floats (`f32`, `f64`, ...)
 - `[]const u8`, which points into the argument strings without copying them
