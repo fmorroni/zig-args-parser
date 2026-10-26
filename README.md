@@ -131,19 +131,21 @@ pub const args: argp.ArgsInfo(@This()) = .{
 
 ### Flags
 
-| Field type | Behavior                                             |
-| ---------- | ---------------------------------------------------- |
-| `bool`     | Takes no value. `true` when given, `false` otherwise |
-| `?T`       | Optional. `null` when not given                      |
-| `T`        | Required. Missing it is `error.MissingFlag`          |
+| Field type      | Behavior                                             |
+| --------------- | ---------------------------------------------------- |
+| `bool`          | Takes no value. `true` when given, `false` otherwise |
+| `T = default`   | Optional. `default` when not given                   |
+| `?T`            | Optional. `null` when not given                      |
+| `T`             | Required. Missing it is `error.MissingFlag`          |
 
 Flags can appear anywhere on the command line, in any order. A flag's value is always the next
 argument, even if it starts with `-`, so `--offset -5` works.
 
 ### Positionals
 
-Positionals are filled in the order their fields are declared. `?T` positionals are optional and must
-come after all required ones; this is checked at compile time. `bool` positionals aren't allowed.
+Positionals are filled in the order their fields are declared. Like flags, a positional is optional
+if it has a default value or a `?T` type. Optional positionals must come after all required ones;
+this is checked at compile time. `bool` positionals aren't allowed.
 
 Everything after `--` is treated as a positional, which lets you pass values that start with `-`:
 
@@ -153,13 +155,32 @@ example -o out.txt -- -weird-name.txt
 
 A lone `-` is also a positional, since it conventionally means stdin.
 
+### Default values
+
+Give a field a default value to make it optional without changing its type:
+
+```zig
+const Args = struct {
+    jobs: u32 = 4,
+    output: []const u8 = "out.txt",
+    mode: enum { fast, thorough } = .fast,
+};
+```
+
+`--help` shows explicit defaults, e.g. `-j, --jobs <u32>  (default: 4)`.
+
+A `?T` field without a default is the same as `?T = null`. Since `null` can't be written on the
+command line, a `?T` with a non-null default can never be `null`, so prefer a plain `T` with that
+default.
+
 ### Supported value types
 
 - `bool` (only for flags)
 - Integers (`u8`, `i64`, ...), parsed in base 10
 - Floats (`f32`, `f64`, ...)
 - `[]const u8`, which points into the argument strings without copying them
-- `enum`
+- Enums, written as their tag names in kebab-case (`very_slow` is given as `very-slow`). `--help`
+  lists the choices, e.g. `<fast|very-slow>`
 - Optionals of the above
 
 ### Compile-time checks
@@ -167,7 +188,7 @@ A lone `-` is also a positional, since it conventionally means stdin.
 - No two flags share a short name
 - Short names are alphanumeric
 - `-h` and `--help` are reserved
-- Required positionals don't come after optional ones
+- Required positionals don't come after optional ones (with a default or `?T`)
 
 ## Help
 
@@ -203,4 +224,5 @@ Pass a `*Diagnostics` to learn what went wrong, or `null` if you don't need it. 
 | `TooManyArguments`                  | The first extra positional                                  |
 | `MissingFlag`                       | The missing flag's long name, e.g. `--output`               |
 | `MissingPositional`                 | The missing positional as shown in the help, e.g. `<input>` |
-| `InvalidCharacter`, `Overflow`, ... | The value that failed to parse                              |
+| `InvalidValue`                      | The value that isn't one of the enum's choices              |
+| `InvalidCharacter`, `Overflow`, ... | The number that failed to parse                             |
