@@ -385,8 +385,6 @@ fn testParse(comptime args: []const []const u8) !TestArgs {
 }
 
 test "long and short names are equivalent" {
-    Debug.dumpComptime(TestParser.args_info);
-    std.debug.print("{s}", .{TestParser.help});
     try std.testing.expectEqual(TestArgs.all_present, try testParse(&.{
         "42",
         "test string",
