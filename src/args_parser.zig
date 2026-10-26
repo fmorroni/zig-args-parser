@@ -49,7 +49,19 @@ const ArgSpec = struct {
     field_name: []const u8,
     long_name: []const u8,
     type: type,
+    default_value_ptr: ?*const anyopaque,
     info: Arg,
+
+    /// The value used when the argument isn't given, or `null` if it's required. Without an explicit
+    /// default, optionals default to `null` and bools to `false`.
+    fn defaultValue(comptime spec: ArgSpec) ?spec.type {
+        if (spec.default_value_ptr) |ptr| return @as(*const spec.type, @ptrCast(@alignCast(ptr))).*;
+        return switch (@typeInfo(spec.type)) {
+            .optional => @as(spec.type, null),
+            .bool => false,
+            else => null,
+        };
+    }
 };
 
 /// Extra information about a `parse` call.
@@ -141,18 +153,16 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
 
             inline for (flags, 0..) |flag, i| {
                 if (!seen_flags[i]) {
-                    switch (@typeInfo(flag.type)) {
-                        .optional => @field(result, flag.field_name) = null,
-                        .bool => @field(result, flag.field_name) = false,
-                        else => return fail(diag, "--" ++ flag.long_name, Errors.MissingFlag),
-                    }
+                    if (comptime flag.defaultValue()) |default| {
+                        @field(result, flag.field_name) = default;
+                    } else return fail(diag, "--" ++ flag.long_name, Errors.MissingFlag);
                 }
             }
 
             inline for (positionals, 0..) |positional, i| {
                 if (i >= positional_count) {
-                    if (@typeInfo(positional.type) == .optional) {
-                        @field(result, positional.field_name) = null;
+                    if (comptime positional.defaultValue()) |default| {
+                        @field(result, positional.field_name) = default;
                     } else return fail(diag, positionalPlaceholder(positional), Errors.MissingPositional);
                 }
             }
@@ -176,6 +186,7 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                     .field_name = field.name,
                     .long_name = snakeToKebab(field.name),
                     .type = field.type,
+                    .default_value_ptr = field.default_value_ptr,
                     .info = info,
                 };
                 i += 1;
@@ -206,7 +217,7 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                 var rows: [positionals.len]HelpRow = undefined;
                 for (positionals, &rows) |positional, *row| row.* = .{
                     .left = positionalPlaceholder(positional),
-                    .right = positional.info.positional.help orelse "",
+                    .right = withDefault(positional, positional.info.positional.help orelse ""),
                 };
                 text = text ++ "\nArguments:\n" ++ helpTable(&rows);
             }
@@ -216,10 +227,8 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                 var left: []const u8 = if (flag.info.flag.short_name) |c| "-" ++ .{c} ++ ", " else "    ";
                 left = left ++ "--" ++ flag.long_name;
                 if (expectsValue(flag)) left = left ++ " <" ++ valueName(flag.type) ++ ">";
-                var right: []const u8 = flag.info.flag.help orelse "";
-                if (@typeInfo(flag.type) != .optional and @typeInfo(flag.type) != .bool) {
-                    right = if (right.len == 0) "(required)" else right ++ " (required)";
-                }
+                var right = withDefault(flag, flag.info.flag.help orelse "");
+                if (flag.defaultValue() == null) right = appendNote(right, "(required)");
                 row.* = .{ .left = left, .right = right };
             }
             rows[flags.len] = .{ .left = "-h, --help", .right = "Print this help and exit" };
@@ -244,8 +253,30 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
             return text;
         }
 
+        /// Adds "(default: ...)" to a help description, for explicit defaults only.
+        fn withDefault(comptime spec: ArgSpec, comptime description: []const u8) []const u8 {
+            if (spec.default_value_ptr == null) return description;
+            const text = defaultText(spec.type, spec.defaultValue().?) orelse return description;
+            return appendNote(description, "(default: " ++ text ++ ")");
+        }
+
+        fn appendNote(comptime description: []const u8, comptime note: []const u8) []const u8 {
+            return if (description.len == 0) note else description ++ " " ++ note;
+        }
+
+        /// How a default value is written in the help, or `null` if it isn't worth showing.
+        fn defaultText(comptime T: type, comptime value: T) ?[]const u8 {
+            return switch (@typeInfo(T)) {
+                .int, .float => std.fmt.comptimePrint("{d}", .{value}),
+                .@"enum" => snakeToKebab(@tagName(value)),
+                .pointer => "\"" ++ value ++ "\"",
+                .optional => |o| if (value) |v| defaultText(o.child, v) else null,
+                else => null,
+            };
+        }
+
         fn positionalPlaceholder(comptime positional: ArgSpec) []const u8 {
-            return if (@typeInfo(positional.type) == .optional)
+            return if (positional.defaultValue() != null)
                 "[" ++ positional.long_name ++ "]"
             else
                 "<" ++ positional.long_name ++ ">";
@@ -330,16 +361,15 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
         fn validatePositionals(comptime positional_specs: []const ArgSpec) void {
             var first_optional: ?[]const u8 = null;
             for (positional_specs) |positional| {
-                switch (@typeInfo(positional.type)) {
-                    .bool => @compileError("positional `" ++ positional.field_name ++ "` can't be a bool"),
-                    .optional => {
-                        if (first_optional == null) first_optional = positional.field_name;
-                    },
-                    else => if (first_optional) |optional| @compileError(
-                        "required positional `" ++ positional.field_name ++
-                            "` comes after optional positional `" ++ optional ++ "`",
-                    ),
+                if (positional.type == bool) {
+                    @compileError("positional `" ++ positional.field_name ++ "` can't be a bool");
                 }
+                if (positional.defaultValue() != null) {
+                    if (first_optional == null) first_optional = positional.field_name;
+                } else if (first_optional) |optional| @compileError(
+                    "required positional `" ++ positional.field_name ++
+                        "` comes after optional positional `" ++ optional ++ "`",
+                );
             }
         }
     };
@@ -351,6 +381,7 @@ const TestArgs = struct {
     max_retries: ?u8,
     some_float: ?f32,
     some_enum: ?enum { option_a, option_b },
+    optional_with_default: i8 = -3,
 
     positional_1: u32,
     positional_2: []const u8,
@@ -362,6 +393,7 @@ const TestArgs = struct {
         .max_retries = 5,
         .some_float = 3.3,
         .some_enum = .option_a,
+        .optional_with_default = 3,
         .positional_1 = 42,
         .positional_2 = "test string",
         .positional_3 = 5.5,
@@ -373,6 +405,7 @@ const TestArgs = struct {
         .max_retries = null,
         .some_float = null,
         .some_enum = null,
+        .optional_with_default = -3,
         .positional_1 = 42,
         .positional_2 = "test string",
         .positional_3 = null,
@@ -383,6 +416,7 @@ const TestArgs = struct {
         .max_retries = .{ .flag = .{ .short_name = 'r' } },
         .some_float = .{ .flag = .{ .short_name = 'f' } },
         .some_enum = .{ .flag = .{ .short_name = 'e' } },
+        .optional_with_default = .{ .flag = .{ .short_name = 'd' } },
         .positional_1 = .{ .positional = .{ .help = "This does something" } },
         .positional_2 = .{ .positional = .{ .help = "This does other thing" } },
         .positional_3 = .{ .positional = .{ .help = "This does other other thing" } },
@@ -421,6 +455,8 @@ test "long and short names are equivalent" {
         "3.3",
         "--some-enum",
         "option-a",
+        "--optional-with-default",
+        "3",
     }));
     try std.testing.expectEqual(TestArgs.all_present, try testParse(&.{
         "42",
@@ -435,6 +471,8 @@ test "long and short names are equivalent" {
         "3.3",
         "-e",
         "option-a",
+        "-d",
+        "3",
     }));
 }
 
@@ -451,6 +489,8 @@ test "flags can come in any order" {
         "-e",
         "option-a",
         "-c",
+        "3",
+        "-d",
         "3",
     }));
 }
@@ -487,6 +527,12 @@ test "enum flag/argument rejects values not in enum set" {
     try std.testing.expectError(error.InvalidValue, testParse(&.{ "42", "test string", "-c", "3", "-e", "option_a" }));
 }
 
+test "argument with default value gets that value if not passed explicitely" {
+    var args = try testParse(&.{ "42", "-c", "3", "--", "test string", "-5.5" });
+    try std.testing.expectEqual(TestArgs.only_required.optional_with_default, args.optional_with_default);
+    args = try testParse(&.{ "42", "-c", "3", "--optional-with-default", "3", "--", "test string", "-5.5" });
+    try std.testing.expectEqual(3, args.optional_with_default);
+}
 test "long names use kebab-case only" {
     try std.testing.expectError(error.InvalidFlag, testParse(&.{
         "42",
@@ -530,6 +576,7 @@ test "help" {
         \\  -r, --max-retries <u8>
         \\  -f, --some-float <f32>
         \\  -e, --some-enum <option-a|option-b>
+        \\  -d, --optional-with-default <i8>     (default: -3)
         \\  -h, --help                           Print this help and exit
         \\
     , w.buffered());
