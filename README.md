@@ -124,18 +124,18 @@ pub const args: argp.ArgsInfo(@This()) = .{
 };
 ```
 
-| Option | Applies to | Meaning |
-|---|---|---|
-| `short_name` | flags | Single-character alias, e.g. `'c'` for `-c` |
-| `help` | flags, positionals | Description shown by `--help` |
+| Option       | Applies to         | Meaning                                     |
+| ------------ | ------------------ | ------------------------------------------- |
+| `short_name` | flags              | Single-character alias, e.g. `'c'` for `-c` |
+| `help`       | flags, positionals | Description shown by `--help`               |
 
 ### Flags
 
-| Field type | Behavior |
-|---|---|
-| `bool` | Takes no value. `true` when given, `false` otherwise |
-| `?T` | Optional. `null` when not given |
-| `T` | Required. Missing it is `error.MissingFlag` |
+| Field type | Behavior                                             |
+| ---------- | ---------------------------------------------------- |
+| `bool`     | Takes no value. `true` when given, `false` otherwise |
+| `?T`       | Optional. `null` when not given                      |
+| `T`        | Required. Missing it is `error.MissingFlag`          |
 
 Flags can appear anywhere on the command line, in any order. A flag's value is always the next
 argument, even if it starts with `-`, so `--offset -5` works.
@@ -148,7 +148,7 @@ come after all required ones; this is checked at compile time. `bool` positional
 Everything after `--` is treated as a positional, which lets you pass values that start with `-`:
 
 ```
-$ example -o out.txt -- -weird-name.txt
+example -o out.txt -- -weird-name.txt
 ```
 
 A lone `-` is also a positional, since it conventionally means stdin.
@@ -195,12 +195,12 @@ const args = try Parser.parse(&it, null);
 Pass a `*Diagnostics` to learn what went wrong, or `null` if you don't need it. After a call,
 `diag.program_name` holds the program name. On error, `diag.arg` holds the cause:
 
-| Error | `diag.arg` |
-|---|---|
-| `HelpRequested` | unchanged |
-| `InvalidFlag` | The unknown flag, e.g. `--jobz` |
-| `MissingValue` | The flag that's missing its value |
-| `TooManyArguments` | The first extra positional |
-| `MissingFlag` | The missing flag's long name, e.g. `--output` |
-| `MissingPositional` | The missing positional as shown in the help, e.g. `<input>` |
-| `InvalidCharacter`, `Overflow`, ... | The value that failed to parse |
+| Error                               | `diag.arg`                                                  |
+| ----------------------------------- | ----------------------------------------------------------- |
+| `HelpRequested`                     | unchanged                                                   |
+| `InvalidFlag`                       | The unknown flag, e.g. `--jobz`                             |
+| `MissingValue`                      | The flag that's missing its value                           |
+| `TooManyArguments`                  | The first extra positional                                  |
+| `MissingFlag`                       | The missing flag's long name, e.g. `--output`               |
+| `MissingPositional`                 | The missing positional as shown in the help, e.g. `<input>` |
+| `InvalidCharacter`, `Overflow`, ... | The value that failed to parse                              |
