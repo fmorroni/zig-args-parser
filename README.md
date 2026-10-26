@@ -23,7 +23,7 @@ const Args = struct {
 
 ## Installation
 
-Requires Zig 0.16.0 or later.
+Requires Zig `0.16.X`.
 
 ```sh
 zig fetch --save git+https://github.com/fmorroni/zig-args-parser
