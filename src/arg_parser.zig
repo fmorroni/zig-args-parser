@@ -52,14 +52,16 @@ const ArgSpec = struct {
     info: Arg,
 };
 
+/// `-h`/`--help` is built in: `parse` returns `error.HelpRequested`, and `printHelp` prints the help.
 pub fn ArgsParser(comptime ExpectedArgs: type) type {
     return struct {
-        const Errors = error{ MissingFlag, MissingPositional, MissingValue, TooManyArguments, InvalidFlag };
+        const Errors = error{ HelpRequested, MissingFlag, MissingPositional, MissingValue, TooManyArguments, InvalidFlag };
 
         const args_info: ArgsInfo(ExpectedArgs) = if (@hasDecl(ExpectedArgs, "args")) ExpectedArgs.args else .{};
 
         const flags = specsOfKind(.flag);
         const positionals = specsOfKind(.positional);
+        const help = generateHelp();
 
         comptime {
             validateShortNames(&flags);
@@ -85,6 +87,7 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
 
                 // A lone "-" is a positional, conventionally meaning stdin.
                 if (!only_positionals and arg.len > 1 and arg[0] == '-') {
+                    if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) return Errors.HelpRequested;
                     inline for (flags, 0..) |flag, i| {
                         if (matches(flag, arg)) {
                             if (comptime expectsValue(flag)) {
@@ -156,6 +159,74 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
             return count;
         }
 
+        /// Writes the help text.
+        pub fn printHelp(w: *std.Io.Writer, program_name: []const u8) std.Io.Writer.Error!void {
+            try w.print("Usage: {s}{s}", .{ program_name, help });
+        }
+
+        /// Everything after "Usage: <program name>".
+        fn generateHelp() []const u8 {
+            var text: []const u8 = " [options]";
+            for (positionals) |positional| text = text ++ " " ++ positionalPlaceholder(positional);
+            text = text ++ "\n";
+
+            if (positionals.len > 0) {
+                var rows: [positionals.len]HelpRow = undefined;
+                for (positionals, &rows) |positional, *row| row.* = .{
+                    .left = positionalPlaceholder(positional),
+                    .right = positional.info.positional.help orelse "",
+                };
+                text = text ++ "\nArguments:\n" ++ helpTable(&rows);
+            }
+
+            var rows: [flags.len + 1]HelpRow = undefined;
+            for (flags, rows[0..flags.len]) |flag, *row| {
+                var left: []const u8 = if (flag.info.flag.short_name) |c| "-" ++ .{c} ++ ", " else "    ";
+                left = left ++ "--" ++ flag.long_name;
+                if (expectsValue(flag)) left = left ++ " <" ++ valueName(flag.type) ++ ">";
+                var right: []const u8 = flag.info.flag.help orelse "";
+                if (@typeInfo(flag.type) != .optional and @typeInfo(flag.type) != .bool) {
+                    right = if (right.len == 0) "(required)" else right ++ " (required)";
+                }
+                row.* = .{ .left = left, .right = right };
+            }
+            rows[flags.len] = .{ .left = "-h, --help", .right = "Print this help and exit" };
+            text = text ++ "\nOptions:\n" ++ helpTable(&rows);
+
+            return text;
+        }
+
+        const HelpRow = struct { left: []const u8, right: []const u8 };
+
+        /// Two columns, with the descriptions aligned.
+        fn helpTable(comptime rows: []const HelpRow) []const u8 {
+            var width = 0;
+            for (rows) |row| width = @max(width, row.left.len);
+
+            var text: []const u8 = "";
+            for (rows) |row| {
+                text = text ++ "  " ++ row.left;
+                if (row.right.len > 0) text = text ++ " " ** (width - row.left.len + 2) ++ row.right;
+                text = text ++ "\n";
+            }
+            return text;
+        }
+
+        fn positionalPlaceholder(comptime positional: ArgSpec) []const u8 {
+            return if (@typeInfo(positional.type) == .optional)
+                "[" ++ positional.long_name ++ "]"
+            else
+                "<" ++ positional.long_name ++ ">";
+        }
+
+        fn valueName(comptime T: type) []const u8 {
+            return switch (@typeInfo(T)) {
+                .optional => |o| valueName(o.child),
+                .pointer => "string",
+                else => @typeName(T),
+            };
+        }
+
         fn matches(comptime flag: ArgSpec, arg: []const u8) bool {
             if (std.mem.startsWith(u8, arg, "--")) return std.mem.eql(u8, arg[2..], flag.long_name);
             const c = flag.info.flag.short_name orelse return false;
@@ -189,7 +260,9 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
 
         fn validateShortNames(comptime flag_specs: []const ArgSpec) void {
             var seen: [256]?[]const u8 = @splat(null);
+            seen['h'] = "help";
             for (flag_specs) |flag| {
+                if (std.mem.eql(u8, flag.long_name, "help")) @compileError("`--help` is reserved");
                 const c = flag.info.flag.short_name orelse continue;
                 if (!std.ascii.isAlphanumeric(c)) @compileError(std.fmt.comptimePrint(
                     "short name '{c}' of flag `{s}` is not alphanumeric",
@@ -280,6 +353,7 @@ fn testParse(args: []const []const u8) !TestArgs {
 
 test "long and short names are equivalent" {
     Debug.dumpComptime(TestParser.args_info);
+    std.debug.print("{s}", .{TestParser.help});
     try std.testing.expectEqual(TestArgs.all_present, try testParse(&.{
         "42",
         "test string",
@@ -367,4 +441,29 @@ test "errors" {
     try std.testing.expectError(error.TooManyArguments, testParse(&.{ "42", "test string", "5.5", "extra", "-c", "3" }));
     try std.testing.expectError(error.InvalidCharacter, testParse(&.{ "42", "test string", "-c", "abc" }));
     try std.testing.expectError(error.Overflow, testParse(&.{ "42", "test string", "-c", "256" }));
+}
+
+test "help" {
+    try std.testing.expectError(error.HelpRequested, testParse(&.{"--help"}));
+    try std.testing.expectError(error.HelpRequested, testParse(&.{ "42", "-h" }));
+
+    var buf: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try TestParser.printHelp(&w, "prog");
+    try std.testing.expectEqualStrings(
+        \\Usage: prog [options] <positional-1> <positional-2> [positional-3]
+        \\
+        \\Arguments:
+        \\  <positional-1>  This does something
+        \\  <positional-2>  This does other thing
+        \\  [positional-3]  This does other other thing
+        \\
+        \\Options:
+        \\      --verbose
+        \\  -c, --count <u8>        Number of whatevers (required)
+        \\  -r, --max-retries <u8>
+        \\  -f, --some-float <f32>
+        \\  -h, --help              Print this help and exit
+        \\
+    , w.buffered());
 }
