@@ -52,6 +52,25 @@ const ArgSpec = struct {
     info: Arg,
 };
 
+/// Extra information about a `parse` call.
+pub const Diagnostics = struct {
+    /// `argv[0]`.
+    program_name: []const u8 = "",
+    /// What caused the error:
+    ///
+    ///         Error                                         `arg`
+    /// ---------------------------------------------------------------------------------------------
+    /// `HelpRequested`                       unchanged
+    /// `InvalidFlag`                         The unknown flag, e.g. `--jobz`
+    /// `MissingValue`                        The flag that's missing its value
+    /// `TooManyArguments`                    The first extra positional
+    /// `MissingFlag`                         The missing flag's long name, e.g. `--output`
+    /// `MissingPositional`                   The missing positional as shown in the help, e.g. `<input>`
+    /// `InvalidValue`                        The value that isn't one of the enum's choices
+    /// `InvalidCharacter`, `Overflow`, ...     The number that failed to parse
+    arg: ?[]const u8 = null,
+};
+
 /// `-h`/`--help` is built in: `parse` returns `error.HelpRequested`, and `printHelp` prints the help.
 pub fn ArgsParser(comptime ExpectedArgs: type) type {
     return struct {
@@ -68,16 +87,21 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
             validatePositionals(&positionals);
         }
 
-        // TODO: may need to make the return a struct with a `.error` field or something to give
-        // better error reports like which flag was invalid or missing.
+        /// Expects the full argument list, including the program name (`argv[0]`) first. Pass a
+        /// `Diagnostics` to find out the program name and which argument caused an error.
         pub fn parse(
             iter: anytype,
+            diag: ?*Diagnostics,
         ) (Errors || std.fmt.ParseIntError || std.fmt.ParseFloatError)!ExpectedArgs {
             var result: ExpectedArgs = undefined;
             var seen_flags: [flags.len]bool = @splat(false);
             var positional_count: usize = 0;
             // Set by `--`, after which everything is positional, even if it starts with '-'.
             var only_positionals = false;
+
+            // `iter` is user defined and could be empty.
+            const program_name = iter.next() orelse "";
+            if (diag) |d| d.program_name = program_name;
 
             args: while (iter.next()) |arg| {
                 if (!only_positionals and std.mem.eql(u8, arg, "--")) {
@@ -91,8 +115,9 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                     inline for (flags, 0..) |flag, i| {
                         if (matches(flag, arg)) {
                             if (comptime expectsValue(flag)) {
-                                const value = iter.next() orelse return Errors.MissingValue;
-                                @field(result, flag.field_name) = try parseValue(flag.type, value);
+                                const value = iter.next() orelse return fail(diag, arg, Errors.MissingValue);
+                                @field(result, flag.field_name) = parseValue(flag.type, value) catch |err|
+                                    return fail(diag, value, err);
                             } else {
                                 @field(result, flag.field_name) = true;
                             }
@@ -100,17 +125,18 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                             continue :args;
                         }
                     }
-                    return Errors.InvalidFlag;
+                    return fail(diag, arg, Errors.InvalidFlag);
                 }
 
                 inline for (positionals, 0..) |positional, i| {
                     if (positional_count == i) {
-                        @field(result, positional.field_name) = try parseValue(positional.type, arg);
+                        @field(result, positional.field_name) = parseValue(positional.type, arg) catch |err|
+                            return fail(diag, arg, err);
                         positional_count += 1;
                         continue :args;
                     }
                 }
-                return Errors.TooManyArguments;
+                return fail(diag, arg, Errors.TooManyArguments);
             }
 
             inline for (flags, 0..) |flag, i| {
@@ -118,7 +144,7 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                     switch (@typeInfo(flag.type)) {
                         .optional => @field(result, flag.field_name) = null,
                         .bool => @field(result, flag.field_name) = false,
-                        else => return Errors.MissingFlag,
+                        else => return fail(diag, "--" ++ flag.long_name, Errors.MissingFlag),
                     }
                 }
             }
@@ -127,11 +153,17 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                 if (i >= positional_count) {
                     if (@typeInfo(positional.type) == .optional) {
                         @field(result, positional.field_name) = null;
-                    } else return Errors.MissingPositional;
+                    } else return fail(diag, positionalPlaceholder(positional), Errors.MissingPositional);
                 }
             }
 
             return result;
+        }
+
+        /// Records `arg` as the cause of `err` and returns `err`.
+        fn fail(diag: ?*Diagnostics, arg: []const u8, err: anytype) @TypeOf(err) {
+            if (diag) |d| d.arg = arg;
+            return err;
         }
 
         fn specsOfKind(comptime kind: std.meta.Tag(Arg)) [countOfKind(kind)]ArgSpec {
@@ -346,9 +378,10 @@ const SliceIterator = struct {
     }
 };
 
-fn testParse(args: []const []const u8) !TestArgs {
-    var iter: SliceIterator = .{ .args = args };
-    return TestParser.parse(&iter);
+/// Prepends the program name, so tests only list the actual arguments.
+fn testParse(comptime args: []const []const u8) !TestArgs {
+    var iter: SliceIterator = .{ .args = &([_][]const u8{"prog"} ++ args[0..args.len].*) };
+    return TestParser.parse(&iter, null);
 }
 
 test "long and short names are equivalent" {
@@ -466,4 +499,24 @@ test "help" {
         \\  -h, --help              Print this help and exit
         \\
     , w.buffered());
+}
+
+test "diagnostics" {
+    var diag: Diagnostics = .{};
+    var iter: SliceIterator = .{ .args = &.{ "prog", "42", "test string", "-c", "abc" } };
+    try std.testing.expectError(error.InvalidCharacter, TestParser.parse(&iter, &diag));
+    try std.testing.expectEqualStrings("prog", diag.program_name);
+    try std.testing.expectEqualStrings("abc", diag.arg.?);
+
+    iter = .{ .args = &.{ "prog", "42" } };
+    try std.testing.expectError(error.MissingFlag, TestParser.parse(&iter, &diag));
+    try std.testing.expectEqualStrings("--count", diag.arg.?);
+
+    iter = .{ .args = &.{ "prog", "42", "-c", "3" } };
+    try std.testing.expectError(error.MissingPositional, TestParser.parse(&iter, &diag));
+    try std.testing.expectEqualStrings("<positional-2>", diag.arg.?);
+
+    iter = .{ .args = &.{ "prog", "42", "test string", "-c", "3", "--unknown" } };
+    try std.testing.expectError(error.InvalidFlag, TestParser.parse(&iter, &diag));
+    try std.testing.expectEqualStrings("--unknown", diag.arg.?);
 }
