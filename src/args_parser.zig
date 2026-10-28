@@ -86,7 +86,15 @@ pub const Diagnostics = struct {
 /// `-h`/`--help` is built in: `parse` returns `error.HelpRequested`, and `printHelp` prints the help.
 pub fn ArgsParser(comptime ExpectedArgs: type) type {
     return struct {
-        pub const Errors = error{ HelpRequested, MissingFlag, MissingPositional, MissingValue, TooManyArguments, InvalidFlag, InvalidValue };
+        pub const Errors = error{
+            HelpRequested,
+            MissingFlag,
+            MissingPositional,
+            MissingValue,
+            TooManyArguments,
+            InvalidFlag,
+            InvalidValue,
+        } || std.fmt.ParseIntError || std.fmt.ParseFloatError;
 
         const args_info: ArgsInfo(ExpectedArgs) = if (@hasDecl(ExpectedArgs, "args")) ExpectedArgs.args else .{};
 
@@ -171,7 +179,7 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
         }
 
         /// Records `arg` as the cause of `err` and returns `err`.
-        fn fail(diag: ?*Diagnostics, arg: []const u8, err: anytype) @TypeOf(err) {
+        fn fail(diag: ?*Diagnostics, arg: []const u8, err: Errors) Errors {
             if (diag) |d| d.arg = arg;
             return err;
         }
@@ -310,7 +318,7 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
             };
         }
 
-        fn parseValue(comptime T: type, s: []const u8) !T {
+        fn parseValue(comptime T: type, s: []const u8) Errors!T {
             return switch (@typeInfo(T)) {
                 .int => std.fmt.parseInt(T, s, 10),
                 .float => std.fmt.parseFloat(T, s),
