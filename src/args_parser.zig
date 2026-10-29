@@ -255,7 +255,7 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
             var text: []const u8 = "";
             for (rows) |row| {
                 text = text ++ "  " ++ row.left;
-                if (row.right.len > 0) text = text ++ " " ** (width - row.left.len + 2) ++ row.right;
+                if (row.right.len > 0) text = text ++ @as([width - row.left.len + 2]u8, @splat(" ")) ++ row.right;
                 text = text ++ "\n";
             }
             return text;
