@@ -187,14 +187,15 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
         fn specsOfKind(comptime kind: std.meta.Tag(Arg)) [countOfKind(kind)]ArgSpec {
             var specs: [countOfKind(kind)]ArgSpec = undefined;
             var i = 0;
-            for (@typeInfo(ExpectedArgs).@"struct".fields) |field| {
-                const info = @field(args_info, field.name);
+            const type_info = @typeInfo(ExpectedArgs).@"struct";
+            for (type_info.field_names, type_info.field_types, type_info.field_attrs) |field_name, field_type, field_attr| {
+                const info = @field(args_info, field_name);
                 if (info != kind) continue;
                 specs[i] = .{
-                    .field_name = field.name,
-                    .long_name = snakeToKebab(field.name),
-                    .type = field.type,
-                    .default_value_ptr = field.default_value_ptr,
+                    .field_name = field_name,
+                    .long_name = snakeToKebab(field_name),
+                    .type = field_type,
+                    .default_value_ptr = field_attr.default_value_ptr,
                     .info = info,
                 };
                 i += 1;
@@ -204,8 +205,8 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
 
         fn countOfKind(comptime kind: std.meta.Tag(Arg)) usize {
             var count = 0;
-            for (@typeInfo(ExpectedArgs).@"struct".fields) |field| {
-                if (@field(args_info, field.name) == kind) count += 1;
+            for (@typeInfo(ExpectedArgs).@"struct".field_names) |field_name| {
+                if (@field(args_info, field_name) == kind) count += 1;
             }
             return count;
         }
@@ -255,7 +256,7 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
             var text: []const u8 = "";
             for (rows) |row| {
                 text = text ++ "  " ++ row.left;
-                if (row.right.len > 0) text = text ++ " " ** (width - row.left.len + 2) ++ row.right;
+                if (row.right.len > 0) text = text ++ @as([width - row.left.len + 2]u8, @splat(' ')) ++ row.right;
                 text = text ++ "\n";
             }
             return text;
@@ -296,8 +297,8 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                 .pointer => "string",
                 .@"enum" => |e| blk: {
                     var text: []const u8 = "";
-                    for (e.fields, 0..) |field, i| {
-                        text = text ++ (if (i == 0) "" else "|") ++ snakeToKebab(field.name);
+                    for (e.field_names, 0..) |field_name, i| {
+                        text = text ++ (if (i == 0) "" else "|") ++ snakeToKebab(field_name);
                     }
                     break :blk text;
                 },
@@ -332,8 +333,8 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
 
         /// Matches the kebab-case tag names, like flag names.
         fn parseEnum(comptime T: type, s: []const u8) Errors!T {
-            inline for (@typeInfo(T).@"enum".fields) |field| {
-                if (std.mem.eql(u8, snakeToKebab(field.name), s)) return @field(T, field.name);
+            inline for (@typeInfo(T).@"enum".field_names) |field_name| {
+                if (std.mem.eql(u8, snakeToKebab(field_name), s)) return @field(T, field_name);
             }
             return Errors.InvalidValue;
         }

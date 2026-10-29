@@ -16,7 +16,7 @@ pub fn dumpComptime(comptime value: anytype) void {
     // Formatting isn't possible at comptime, so let `zig fmt`'s renderer do it now. Fall back to
     // the raw single line if anything goes wrong.
     const gpa = std.heap.page_allocator;
-    var tree = std.zig.Ast.parse(gpa, source, .zon) catch return std.debug.print("{s}\n", .{source});
+    var tree = std.zig.Ast.parse(gpa, source, .{ .mode = .zon }) catch return std.debug.print("{s}\n", .{source});
     defer tree.deinit(gpa);
     if (tree.errors.len != 0) return std.debug.print("{s}\n", .{source});
     const formatted = tree.renderAlloc(gpa) catch return std.debug.print("{s}\n", .{source});
@@ -30,11 +30,11 @@ fn dumpValue(w: *std.Io.Writer, comptime value: anytype) !void {
     const T = @TypeOf(value);
     switch (@typeInfo(T)) {
         .@"struct" => |info| {
-            if (info.fields.len == 0) return w.writeAll(".{}");
+            if (info.field_names.len == 0) return w.writeAll(".{}");
             try w.writeAll(".{ ");
-            inline for (info.fields) |f| {
-                try w.print(".{f} = ", .{std.zig.fmtIdP(f.name)});
-                try dumpValue(w, @field(value, f.name));
+            inline for (info.field_names) |name| {
+                try w.print(".{f} = ", .{std.zig.fmtIdP(name)});
+                try dumpValue(w, @field(value, name));
                 try w.writeAll(", ");
             }
             try w.writeAll("}");
