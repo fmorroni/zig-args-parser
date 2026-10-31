@@ -99,8 +99,8 @@ $ example --help
 Usage: example [options] <input> [limit]
 
 Arguments:
-  <input>  File to read
-  [limit]  Stop after this many lines
+  <input>  File to read (string)
+  [limit]  Stop after this many lines (u64)
 
 Options:
   -v, --verbose          Print more details

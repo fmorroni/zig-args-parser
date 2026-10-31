@@ -225,7 +225,10 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                 var rows: [positionals.len]HelpRow = undefined;
                 for (positionals, &rows) |positional, *row| row.* = .{
                     .left = positionalPlaceholder(positional),
-                    .right = withDefault(positional, positional.info.positional.help orelse ""),
+                    .right = withNotes(positional.info.positional.help orelse "", &.{
+                        valueTypeName(positional.type),
+                        defaultNote(positional),
+                    }),
                 };
                 text = text ++ "\nArguments:\n" ++ helpTable(&rows);
             }
@@ -234,9 +237,11 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
             for (flags, rows[0..flags.len]) |flag, *row| {
                 var left: []const u8 = if (flag.info.flag.short_name) |c| "-" ++ .{c} ++ ", " else "    ";
                 left = left ++ "--" ++ flag.long_name;
-                if (expectsValue(flag)) left = left ++ " <" ++ valueName(flag.type) ++ ">";
-                var right = withDefault(flag, flag.info.flag.help orelse "");
-                if (flag.defaultValue() == null) right = appendNote(right, "(required)");
+                if (expectsValue(flag)) left = left ++ " <" ++ valueTypeName(flag.type) ++ ">";
+                const right = withNotes(flag.info.flag.help orelse "", &.{
+                    defaultNote(flag),
+                    if (flag.defaultValue() == null) "required" else null,
+                });
                 row.* = .{ .left = left, .right = right };
             }
             rows[flags.len] = .{ .left = "-h, --help", .right = "Print this help and exit" };
@@ -261,11 +266,22 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
             return text;
         }
 
-        /// Adds "(default: ...)" to a help description, for explicit defaults only.
-        fn withDefault(comptime spec: ArgSpec, comptime description: []const u8) []const u8 {
-            if (spec.default_value_ptr == null) return description;
-            const text = defaultText(spec.type, spec.defaultValue().?) orelse return description;
-            return appendNote(description, "(default: " ++ text ++ ")");
+        /// "default: ..." for explicit defaults only, or `null` if there's nothing worth showing.
+        fn defaultNote(comptime spec: ArgSpec) ?[]const u8 {
+            if (spec.default_value_ptr == null) return null;
+            const text = defaultValueText(spec.type, spec.defaultValue().?) orelse return null;
+            return "default: " ++ text;
+        }
+
+        /// Adds the non-null notes to a help description as "(a, b, ...)".
+        fn withNotes(comptime description: []const u8, comptime notes: []const ?[]const u8) []const u8 {
+            var joined: []const u8 = "";
+            for (notes) |maybe_note| {
+                const note = maybe_note orelse continue;
+                joined = joined ++ (if (joined.len == 0) "" else ", ") ++ note;
+            }
+            if (joined.len == 0) return description;
+            return appendNote(description, "(" ++ joined ++ ")");
         }
 
         fn appendNote(comptime description: []const u8, comptime note: []const u8) []const u8 {
@@ -273,12 +289,12 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
         }
 
         /// How a default value is written in the help, or `null` if it isn't worth showing.
-        fn defaultText(comptime T: type, comptime value: T) ?[]const u8 {
+        fn defaultValueText(comptime T: type, comptime value: T) ?[]const u8 {
             return switch (@typeInfo(T)) {
                 .int, .float => std.fmt.comptimePrint("{d}", .{value}),
                 .@"enum" => snakeToKebab(@tagName(value)),
                 .pointer => "\"" ++ value ++ "\"",
-                .optional => |o| if (value) |v| defaultText(o.child, v) else null,
+                .optional => |o| if (value) |v| defaultValueText(o.child, v) else null,
                 else => null,
             };
         }
@@ -290,9 +306,9 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                 "<" ++ positional.long_name ++ ">";
         }
 
-        fn valueName(comptime T: type) []const u8 {
+        fn valueTypeName(comptime T: type) []const u8 {
             return switch (@typeInfo(T)) {
-                .optional => |o| valueName(o.child),
+                .optional => |o| valueTypeName(o.child),
                 .pointer => "string",
                 .@"enum" => |e| blk: {
                     var text: []const u8 = "";
@@ -574,9 +590,9 @@ test "help" {
         \\Usage: prog [options] <positional-1> <positional-2> [positional-3]
         \\
         \\Arguments:
-        \\  <positional-1>  This does something
-        \\  <positional-2>  This does other thing
-        \\  [positional-3]  This does other other thing
+        \\  <positional-1>  This does something (u32)
+        \\  <positional-2>  This does other thing (string)
+        \\  [positional-3]  This does other other thing (f32)
         \\
         \\Options:
         \\      --verbose
@@ -586,6 +602,32 @@ test "help" {
         \\  -e, --some-enum <option-a|option-b>
         \\  -d, --optional-with-default <i8>     (default: -3)
         \\  -h, --help                           Print this help and exit
+        \\
+    , w.buffered());
+
+    const WithDefaults = struct {
+        input: []const u8,
+        limit: u32 = 123,
+        mode: enum { fast, slow } = .fast,
+
+        pub const args: ArgsInfo(@This()) = .{
+            .input = .{ .positional = .{ .help = "File to read" } },
+            .limit = .{ .positional = .{ .help = "Stop after this many lines" } },
+            .mode = .{ .positional = .{} },
+        };
+    };
+    w = .fixed(&buf);
+    try ArgsParser(WithDefaults).printHelp(&w, "prog");
+    try std.testing.expectEqualStrings(
+        \\Usage: prog [options] <input> [limit] [mode]
+        \\
+        \\Arguments:
+        \\  <input>  File to read (string)
+        \\  [limit]  Stop after this many lines (u32, default: 123)
+        \\  [mode]   (fast|slow, default: fast)
+        \\
+        \\Options:
+        \\  -h, --help  Print this help and exit
         \\
     , w.buffered());
 }
