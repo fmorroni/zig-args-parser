@@ -49,6 +49,12 @@ pub fn positionalPlaceholder(comptime positional: ArgSpec) []const u8 {
         "<" ++ positional.long_name ++ ">";
 }
 
+/// A flag's names: `-o, --output`, or just `--output` if it has no short name.
+pub fn flagNames(comptime flag: ArgSpec) []const u8 {
+    const long = "--" ++ flag.long_name;
+    return if (flag.info.flag.short_name) |c| "-" ++ .{c} ++ ", " ++ long else long;
+}
+
 const Row = struct { left: []const u8, right: []const u8 };
 
 /// Two columns, with the descriptions aligned.

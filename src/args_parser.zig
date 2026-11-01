@@ -85,19 +85,25 @@ pub fn snakeToKebab(comptime field_name: []const u8) []const u8 {
 pub const Diagnostics = struct {
     /// `argv[0]`.
     program_name: []const u8 = "",
-    /// What caused the error:
-    ///
-    ///         Error                                         `arg`
-    /// ---------------------------------------------------------------------------------------------
-    /// `HelpRequested`                       unchanged
-    /// `InvalidFlag`                         The unknown flag, e.g. `--jobz`
-    /// `MissingValue`                        The flag that's missing its value
-    /// `TooManyArguments`                    The first extra positional
-    /// `MissingFlag`                         The missing flag's long name, e.g. `--output`
-    /// `MissingPositional`                   The missing positional as shown in the help, e.g. `<input>`
-    /// `InvalidValue`                        The value that isn't one of the enum's choices
-    /// `InvalidCharacter`, `Overflow`, ...     The number that failed to parse
-    arg: ?[]const u8 = null,
+    /// What caused the error. Unchanged by `HelpRequested`.
+    cause: Cause = .{},
+
+    /// | Error                               | `argument`                              | `input`                  |
+    /// | ----------------------------------- | --------------------------------------- | ------------------------ |
+    /// | `InvalidFlag`                       | `null`                                  | The unknown flag         |
+    /// | `TooManyArguments`                  | `null`                                  | The first extra argument |
+    /// | `MissingFlag`                       | Both names, e.g. `-o, --output`         | `null`                   |
+    /// | `MissingPositional`                 | As shown in the help, e.g. `<input>`    | `null`                   |
+    /// | `MissingValue`                      | The flag as given, e.g. `-o`            | `null`                   |
+    /// | `InvalidValue`                      | The flag as given, or the positional    | The value                |
+    /// | `InvalidCharacter`, `Overflow`, ... | The flag as given, or the positional    | The value                |
+    pub const Cause = struct {
+        /// The argument the error is about, or `null` if the input didn't match any argument.
+        argument: ?[]const u8 = null,
+        /// The command-line text that caused the error, or `null` if the error is about something
+        /// missing.
+        input: ?[]const u8 = null,
+    };
 };
 
 /// `-h`/`--help` is built in: `parse` returns `error.HelpRequested`, and `printHelp` prints the help.
@@ -152,9 +158,9 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                     inline for (flags, 0..) |flag, i| {
                         if (matches(flag, arg)) {
                             if (comptime flag.expectsValue()) {
-                                const value = iter.next() orelse return fail(diag, arg, Errors.MissingValue);
+                                const value = iter.next() orelse return fail(diag, Errors.MissingValue, .{ .argument = arg });
                                 @field(result, flag.field_name) = parseValue(flag.type, value) catch |err|
-                                    return fail(diag, value, err);
+                                    return fail(diag, err, .{ .argument = arg, .input = value });
                             } else {
                                 @field(result, flag.field_name) = true;
                             }
@@ -162,25 +168,25 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                             continue :args;
                         }
                     }
-                    return fail(diag, arg, Errors.InvalidFlag);
+                    return fail(diag, Errors.InvalidFlag, .{ .input = arg });
                 }
 
                 inline for (positionals, 0..) |positional, i| {
                     if (positional_count == i) {
                         @field(result, positional.field_name) = parseValue(positional.type, arg) catch |err|
-                            return fail(diag, arg, err);
+                            return fail(diag, err, .{ .argument = help.positionalPlaceholder(positional), .input = arg });
                         positional_count += 1;
                         continue :args;
                     }
                 }
-                return fail(diag, arg, Errors.TooManyArguments);
+                return fail(diag, Errors.TooManyArguments, .{ .input = arg });
             }
 
             inline for (flags, 0..) |flag, i| {
                 if (!seen_flags[i]) {
                     if (comptime flag.defaultValue()) |default| {
                         @field(result, flag.field_name) = default;
-                    } else return fail(diag, "--" ++ flag.long_name, Errors.MissingFlag);
+                    } else return fail(diag, Errors.MissingFlag, .{ .argument = help.flagNames(flag) });
                 }
             }
 
@@ -188,16 +194,16 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                 if (i >= positional_count) {
                     if (comptime positional.defaultValue()) |default| {
                         @field(result, positional.field_name) = default;
-                    } else return fail(diag, help.positionalPlaceholder(positional), Errors.MissingPositional);
+                    } else return fail(diag, Errors.MissingPositional, .{ .argument = help.positionalPlaceholder(positional) });
                 }
             }
 
             return result;
         }
 
-        /// Records `arg` as the cause of `err` and returns `err`.
-        fn fail(diag: ?*Diagnostics, arg: []const u8, err: Errors) Errors {
-            if (diag) |d| d.arg = arg;
+        /// Records what caused `err` and returns `err`.
+        fn fail(diag: ?*Diagnostics, err: Errors, cause: Diagnostics.Cause) Errors {
+            if (diag) |d| d.cause = cause;
             return err;
         }
 
@@ -483,17 +489,41 @@ test "diagnostics" {
     var iter: SliceIterator = .{ .args = &.{ "prog", "42", "test string", "-c", "abc" } };
     try std.testing.expectError(error.InvalidCharacter, TestParser.parse(&iter, &diag));
     try std.testing.expectEqualStrings("prog", diag.program_name);
-    try std.testing.expectEqualStrings("abc", diag.arg.?);
+    try expectCause(diag, "-c", "abc");
+
+    iter = .{ .args = &.{ "prog", "42asdf", "test string", "-c", "3" } };
+    try std.testing.expectError(error.InvalidCharacter, TestParser.parse(&iter, &diag));
+    try expectCause(diag, "<positional-1>", "42asdf");
+
+    iter = .{ .args = &.{ "prog", "42", "test string", "--count" } };
+    try std.testing.expectError(error.MissingValue, TestParser.parse(&iter, &diag));
+    try expectCause(diag, "--count", null);
 
     iter = .{ .args = &.{ "prog", "42" } };
     try std.testing.expectError(error.MissingFlag, TestParser.parse(&iter, &diag));
-    try std.testing.expectEqualStrings("--count", diag.arg.?);
+    try expectCause(diag, "-c, --count", null);
 
     iter = .{ .args = &.{ "prog", "42", "-c", "3" } };
     try std.testing.expectError(error.MissingPositional, TestParser.parse(&iter, &diag));
-    try std.testing.expectEqualStrings("<positional-2>", diag.arg.?);
+    try expectCause(diag, "<positional-2>", null);
 
     iter = .{ .args = &.{ "prog", "42", "test string", "-c", "3", "--unknown" } };
     try std.testing.expectError(error.InvalidFlag, TestParser.parse(&iter, &diag));
-    try std.testing.expectEqualStrings("--unknown", diag.arg.?);
+    try expectCause(diag, null, "--unknown");
+
+    iter = .{ .args = &.{ "prog", "42", "test string", "1.5", "extra" } };
+    try std.testing.expectError(error.TooManyArguments, TestParser.parse(&iter, &diag));
+    try expectCause(diag, null, "extra");
+}
+
+fn expectCause(diag: Diagnostics, argument: ?[]const u8, input: ?[]const u8) !void {
+    try expectOptionalString(argument, diag.cause.argument);
+    try expectOptionalString(input, diag.cause.input);
+}
+
+fn expectOptionalString(expected: ?[]const u8, actual: ?[]const u8) !void {
+    if (expected) |e| {
+        try std.testing.expect(actual != null);
+        try std.testing.expectEqualStrings(e, actual.?);
+    } else try std.testing.expectEqual(null, actual);
 }
