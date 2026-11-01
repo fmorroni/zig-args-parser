@@ -74,7 +74,10 @@ pub fn main(init: std.process.Init) !void {
             return stdout.interface.flush();
         },
         else => {
-            std.debug.print("{s}: {t}: '{s}'\n", .{ diag.program_name, err, diag.arg orelse "" });
+            std.debug.print("{s}: {t}:", .{ diag.program_name, err });
+            if (diag.cause.argument) |argument| std.debug.print(" {s}", .{argument});
+            if (diag.cause.input) |input| std.debug.print(" '{s}'", .{input});
+            std.debug.print("\n", .{});
             std.process.exit(1);
         },
     };
@@ -90,10 +93,13 @@ $ example -o out.txt in.txt 10 -v
 input=in.txt output=out.txt jobs=null limit=10 verbose=true
 
 $ example in.txt
-example: MissingFlag: '--output'
+example: MissingFlag: -o, --output
 
 $ example -o out.txt in.txt --jobz 3
 example: InvalidFlag: '--jobz'
+
+$ example -o out.txt -j abc in.txt
+example: InvalidCharacter: -j 'abc'
 
 $ example --help
 Usage: example [options] <input> [limit]
@@ -214,15 +220,17 @@ const args = try Parser.parse(&it, null);
 ```
 
 Pass a `*Diagnostics` to learn what went wrong, or `null` if you don't need it. After a call,
-`diag.program_name` holds the program name. On error, `diag.arg` holds the cause:
+`diag.program_name` holds the program name. On error, `diag.cause` says what caused it: `argument` is
+the argument the error is about, and `input` is the command-line text that caused it. Either can be
+`null`:
 
-| Error                               | `diag.arg`                                                  |
-| ----------------------------------- | ----------------------------------------------------------- |
-| `HelpRequested`                     | unchanged                                                   |
-| `InvalidFlag`                       | The unknown flag, e.g. `--jobz`                             |
-| `MissingValue`                      | The flag that's missing its value                           |
-| `TooManyArguments`                  | The first extra positional                                  |
-| `MissingFlag`                       | The missing flag's long name, e.g. `--output`               |
-| `MissingPositional`                 | The missing positional as shown in the help, e.g. `<input>` |
-| `InvalidValue`                      | The value that isn't one of the enum's choices              |
-| `InvalidCharacter`, `Overflow`, ... | The number that failed to parse                             |
+| Error                               | `argument`                                      | `input`                  |
+| ----------------------------------- | ----------------------------------------------- | ------------------------ |
+| `HelpRequested`                     | unchanged                                       | unchanged                |
+| `InvalidFlag`                       | `null`                                          | The unknown flag         |
+| `TooManyArguments`                  | `null`                                          | The first extra argument |
+| `MissingFlag`                       | Both names, e.g. `-o, --output`                 | `null`                   |
+| `MissingPositional`                 | As shown in the help, e.g. `<input>`            | `null`                   |
+| `MissingValue`                      | The flag as given, e.g. `-o`                    | `null`                   |
+| `InvalidValue`                      | The flag as given, or the positional's `<name>` | The value                |
+| `InvalidCharacter`, `Overflow`, ... | The flag as given, or the positional's `<name>` | The value                |
