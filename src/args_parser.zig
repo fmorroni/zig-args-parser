@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const Debug = @import("debug.zig");
+const help = @import("help.zig");
 
 /// How a field of the user's args struct is parsed. Fields default to `.{ .flag = .{} }`.
 pub const Arg = union(enum) {
@@ -45,7 +46,7 @@ pub fn ArgsInfo(comptime T: type) type {
 }
 
 /// Everything the parser needs to know about one field.
-const ArgSpec = struct {
+pub const ArgSpec = struct {
     field_name: []const u8,
     long_name: []const u8,
     type: type,
@@ -54,7 +55,7 @@ const ArgSpec = struct {
 
     /// The value used when the argument isn't given, or `null` if it's required. Without an explicit
     /// default, optionals default to `null` and bools to `false`.
-    fn defaultValue(comptime spec: ArgSpec) ?spec.type {
+    pub fn defaultValue(comptime spec: ArgSpec) ?spec.type {
         if (spec.default_value_ptr) |ptr| return @as(*const spec.type, @ptrCast(@alignCast(ptr))).*;
         return switch (@typeInfo(spec.type)) {
             .optional => @as(spec.type, null),
@@ -62,7 +63,23 @@ const ArgSpec = struct {
             else => null,
         };
     }
+
+    /// Whether a flag takes a value. Bool flags don't: their presence means `true`.
+    pub fn expectsValue(comptime spec: ArgSpec) bool {
+        return spec.type != bool;
+    }
 };
+
+/// `max_retries` -> `max-retries`, for flag names and enum values.
+pub fn snakeToKebab(comptime field_name: []const u8) []const u8 {
+    // Need comptime so the result is stored as binary rodata.
+    return comptime blk: {
+        var buf: [field_name.len]u8 = field_name[0..field_name.len].*;
+        std.mem.replaceScalar(u8, &buf, '_', '-');
+        const final = buf;
+        break :blk &final;
+    };
+}
 
 /// Extra information about a `parse` call.
 pub const Diagnostics = struct {
@@ -100,7 +117,7 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
 
         const flags = specsOfKind(.flag);
         const positionals = specsOfKind(.positional);
-        const help = generateHelp();
+        const help_text = help.generate(&flags, &positionals);
 
         comptime {
             validateShortNames(&flags);
@@ -134,7 +151,7 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                     if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) return Errors.HelpRequested;
                     inline for (flags, 0..) |flag, i| {
                         if (matches(flag, arg)) {
-                            if (comptime expectsValue(flag)) {
+                            if (comptime flag.expectsValue()) {
                                 const value = iter.next() orelse return fail(diag, arg, Errors.MissingValue);
                                 @field(result, flag.field_name) = parseValue(flag.type, value) catch |err|
                                     return fail(diag, value, err);
@@ -171,7 +188,7 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                 if (i >= positional_count) {
                     if (comptime positional.defaultValue()) |default| {
                         @field(result, positional.field_name) = default;
-                    } else return fail(diag, positionalPlaceholder(positional), Errors.MissingPositional);
+                    } else return fail(diag, help.positionalPlaceholder(positional), Errors.MissingPositional);
                 }
             }
 
@@ -213,126 +230,13 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
 
         /// Writes the help text.
         pub fn printHelp(w: *std.Io.Writer, program_name: []const u8) std.Io.Writer.Error!void {
-            try w.print("Usage: {s}{s}", .{ program_name, help });
-        }
-
-        /// Everything after "Usage: <program name>".
-        fn generateHelp() []const u8 {
-            var text: []const u8 = " [options]";
-            for (positionals) |positional| text = text ++ " " ++ positionalPlaceholder(positional);
-            text = text ++ "\n";
-
-            if (positionals.len > 0) {
-                var rows: [positionals.len]HelpRow = undefined;
-                for (positionals, &rows) |positional, *row| row.* = .{
-                    .left = positionalPlaceholder(positional),
-                    .right = withNotes(positional.info.positional.help orelse "", &.{
-                        valueTypeName(positional.type),
-                        defaultNote(positional),
-                    }),
-                };
-                text = text ++ "\nArguments:\n" ++ helpTable(&rows);
-            }
-
-            var rows: [flags.len + 1]HelpRow = undefined;
-            for (flags, rows[0..flags.len]) |flag, *row| {
-                var left: []const u8 = if (flag.info.flag.short_name) |c| "-" ++ .{c} ++ ", " else "    ";
-                left = left ++ "--" ++ flag.long_name;
-                if (expectsValue(flag)) left = left ++ " <" ++ valueTypeName(flag.type) ++ ">";
-                const right = withNotes(flag.info.flag.help orelse "", &.{
-                    defaultNote(flag),
-                    if (flag.defaultValue() == null) "required" else null,
-                });
-                row.* = .{ .left = left, .right = right };
-            }
-            rows[flags.len] = .{ .left = "-h, --help", .right = "Print this help and exit" };
-            text = text ++ "\nOptions:\n" ++ helpTable(&rows);
-
-            return text;
-        }
-
-        const HelpRow = struct { left: []const u8, right: []const u8 };
-
-        /// Two columns, with the descriptions aligned.
-        fn helpTable(comptime rows: []const HelpRow) []const u8 {
-            var width = 0;
-            for (rows) |row| width = @max(width, row.left.len);
-
-            var text: []const u8 = "";
-            for (rows) |row| {
-                text = text ++ "  " ++ row.left;
-                if (row.right.len > 0) text = text ++ @as([width - row.left.len + 2]u8, @splat(' ')) ++ row.right;
-                text = text ++ "\n";
-            }
-            return text;
-        }
-
-        /// "default: ..." for explicit defaults only, or `null` if there's nothing worth showing.
-        fn defaultNote(comptime spec: ArgSpec) ?[]const u8 {
-            if (spec.default_value_ptr == null) return null;
-            const text = defaultValueText(spec.type, spec.defaultValue().?) orelse return null;
-            return "default: " ++ text;
-        }
-
-        /// Adds the non-null notes to a help description as "(a, b, ...)".
-        fn withNotes(comptime description: []const u8, comptime notes: []const ?[]const u8) []const u8 {
-            var joined: []const u8 = "";
-            for (notes) |maybe_note| {
-                const note = maybe_note orelse continue;
-                joined = joined ++ (if (joined.len == 0) "" else ", ") ++ note;
-            }
-            if (joined.len == 0) return description;
-            return appendNote(description, "(" ++ joined ++ ")");
-        }
-
-        fn appendNote(comptime description: []const u8, comptime note: []const u8) []const u8 {
-            return if (description.len == 0) note else description ++ " " ++ note;
-        }
-
-        /// How a default value is written in the help, or `null` if it isn't worth showing.
-        fn defaultValueText(comptime T: type, comptime value: T) ?[]const u8 {
-            return switch (@typeInfo(T)) {
-                .int, .float => std.fmt.comptimePrint("{d}", .{value}),
-                .@"enum" => snakeToKebab(@tagName(value)),
-                .pointer => "\"" ++ value ++ "\"",
-                .optional => |o| if (value) |v| defaultValueText(o.child, v) else null,
-                else => null,
-            };
-        }
-
-        fn positionalPlaceholder(comptime positional: ArgSpec) []const u8 {
-            return if (positional.defaultValue() != null)
-                "[" ++ positional.long_name ++ "]"
-            else
-                "<" ++ positional.long_name ++ ">";
-        }
-
-        fn valueTypeName(comptime T: type) []const u8 {
-            return switch (@typeInfo(T)) {
-                .optional => |o| valueTypeName(o.child),
-                .pointer => "string",
-                .@"enum" => |e| blk: {
-                    var text: []const u8 = "";
-                    for (e.field_names, 0..) |field_name, i| {
-                        text = text ++ (if (i == 0) "" else "|") ++ snakeToKebab(field_name);
-                    }
-                    break :blk text;
-                },
-                else => @typeName(T),
-            };
+            try w.print("Usage: {s} {s}", .{ program_name, help_text });
         }
 
         fn matches(comptime flag: ArgSpec, arg: []const u8) bool {
             if (std.mem.startsWith(u8, arg, "--")) return std.mem.eql(u8, arg[2..], flag.long_name);
             const c = flag.info.flag.short_name orelse return false;
             return arg.len == 2 and arg[0] == '-' and arg[1] == c;
-        }
-
-        fn expectsValue(comptime flag: ArgSpec) bool {
-            return switch (@typeInfo(flag.type)) {
-                .bool => false,
-                else => true,
-            };
         }
 
         fn parseValue(comptime T: type, s: []const u8) Errors!T {
@@ -353,16 +257,6 @@ pub fn ArgsParser(comptime ExpectedArgs: type) type {
                 if (std.mem.eql(u8, snakeToKebab(field_name), s)) return @field(T, field_name);
             }
             return Errors.InvalidValue;
-        }
-
-        fn snakeToKebab(comptime field_name: []const u8) []const u8 {
-            // Need comptime so the result is stored as binary rodata.
-            return comptime blk: {
-                var buf: [field_name.len]u8 = field_name[0..field_name.len].*;
-                std.mem.replaceScalar(u8, &buf, '_', '-');
-                const final = buf;
-                break :blk &final;
-            };
         }
 
         fn validateShortNames(comptime flag_specs: []const ArgSpec) void {
@@ -580,57 +474,9 @@ test "errors" {
     try std.testing.expectError(error.Overflow, testParse(&.{ "42", "test string", "-c", "256" }));
 }
 
-test "help" {
+test "-h and --help return HelpRequested" {
     try std.testing.expectError(error.HelpRequested, testParse(&.{"--help"}));
     try std.testing.expectError(error.HelpRequested, testParse(&.{ "42", "-h" }));
-
-    var buf: [1024]u8 = undefined;
-    var w: std.Io.Writer = .fixed(&buf);
-    try TestParser.printHelp(&w, "prog");
-    try std.testing.expectEqualStrings(
-        \\Usage: prog [options] <positional-1> <positional-2> [positional-3]
-        \\
-        \\Arguments:
-        \\  <positional-1>  This does something (u32)
-        \\  <positional-2>  This does other thing (string)
-        \\  [positional-3]  This does other other thing (f32)
-        \\
-        \\Options:
-        \\      --verbose
-        \\  -c, --count <u8>                     Number of whatevers (required)
-        \\  -r, --max-retries <u8>
-        \\  -f, --some-float <f32>
-        \\  -e, --some-enum <option-a|option-b>
-        \\  -d, --optional-with-default <i8>     (default: -3)
-        \\  -h, --help                           Print this help and exit
-        \\
-    , w.buffered());
-
-    const WithDefaults = struct {
-        input: []const u8,
-        limit: u32 = 123,
-        mode: enum { fast, slow } = .fast,
-
-        pub const args: ArgsInfo(@This()) = .{
-            .input = .{ .positional = .{ .help = "File to read" } },
-            .limit = .{ .positional = .{ .help = "Stop after this many lines" } },
-            .mode = .{ .positional = .{} },
-        };
-    };
-    w = .fixed(&buf);
-    try ArgsParser(WithDefaults).printHelp(&w, "prog");
-    try std.testing.expectEqualStrings(
-        \\Usage: prog [options] <input> [limit] [mode]
-        \\
-        \\Arguments:
-        \\  <input>  File to read (string)
-        \\  [limit]  Stop after this many lines (u32, default: 123)
-        \\  [mode]   (fast|slow, default: fast)
-        \\
-        \\Options:
-        \\  -h, --help  Print this help and exit
-        \\
-    , w.buffered());
 }
 
 test "diagnostics" {
