@@ -26,7 +26,7 @@ const Args = struct {
 Requires Zig `0.16.X`.
 
 ```sh
-zig fetch --save 'git+https://github.com/fmorroni/zig-args-parser#v0.1.0'
+zig fetch --save 'git+https://github.com/fmorroni/zig-args-parser#v0.1.1'
 ```
 
 Then in your `build.zig`:
