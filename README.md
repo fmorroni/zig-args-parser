@@ -63,7 +63,6 @@ pub fn main(init: std.process.Init) !void {
     const Parser = argp.ArgsParser(Args);
 
     var it = init.minimal.args.iterate();
-    defer it.deinit();
 
     var diag: argp.Diagnostics = .{};
     const args = Parser.parse(&it, &diag) catch |err| switch (err) {
@@ -114,6 +113,10 @@ Options:
   -o, --output <string>  Where to write the result (required)
   -h, --help             Print this help and exit
 ```
+
+> [!NOTE]
+> On Windows, `iterate()` doesn't compile because the arguments have to be decoded into an allocated
+> buffer. Use `init.minimal.args.iterateAllocator(gpa)` instead, and free it with `it.deinit()`.
 
 ## Defining arguments
 
